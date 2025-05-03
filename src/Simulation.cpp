@@ -62,9 +62,42 @@ void Simulation::stop() {
 
 void Simulation::step() {
     removeEscapedParticles();
-    applyForces(timeStep);
+    
+    // Start the thread manager if it's not already running
+    if (!threadManager->isRunning()) {
+        threadManager->start();
+    }
+    
+    // Divide particles among threads for force application
+    size_t particlesPerThread = std::max(size_t(1), particles.size() / numThreads);
+    for (size_t i = 0; i < particles.size(); i += particlesPerThread) {
+        size_t end = std::min(i + particlesPerThread, particles.size());
+        threadManager->addTask([this, i, end]() {
+            for (size_t j = i; j < end; j++) {
+                // Apply forces to each particle in the range
+                double x = particles[j]->getX();
+                double y = particles[j]->getY();
+                double distance = std::sqrt(x*x + y*y);
+                
+                if (distance > 0) {
+                    double force = containmentField->getContainmentForce(*particles[j]);
+                    double dirX = -x / distance;
+                    double dirY = -y / distance;
+                    double vx = particles[j]->getVX() + force * dirX * timeStep;  
+                    double vy = particles[j]->getVY() + force * dirY * timeStep;
+                    particles[j]->setVelocity(vx, vy);
+                }
+            }
+        });
+    }
+    
+    // Wait for all force calculation tasks to complete
+    threadManager->waitForCompletion();
+    
+    // Update positions (could also be parallelized)
     updatePositions(timeStep);
     handleCollisions();
+    containmentField->update(timeStep);
 }
 
 void Simulation::addParticle(std::unique_ptr<Particle> particle) {
@@ -119,33 +152,9 @@ void Simulation::updatePositions(double dt) {
 void Simulation::handleCollisions() {
     for (size_t i = 0; i < particles.size(); i++) {
         for (size_t j = i + 1; j < particles.size(); j++) {
-            double dx = particles[i]->getX() - particles[j]->getX();
-            double dy = particles[i]->getY() - particles[j]->getY();
-            double distance = std::sqrt(dx*dx + dy*dy);
-            
-            if (distance < particles[i]->getMaxEnergy() + particles[j]->getMaxEnergy()) {
+            if (particles[i]->isColliding(*particles[j])) {
                 particles[i]->collide(*particles[j]);
             }
-        }
-    }
-}
-
-void Simulation::applyForces(double dt) {
-    for (auto& particle : particles) {
-        double x = particle->getX();
-        double y = particle->getY();
-        double distance = std::sqrt(x*x + y*y);
-        
-        if (distance > 0) {
-            double force = containmentField->getContainmentForce(*particle);
-            
-            double dirX = -x / distance;
-            double dirY = -y / distance;
-            
-            double vx = particle->getVX() + force * dirX * dt;  
-            double vy = particle->getVY() + force * dirY * dt;
-            
-            particle->setVelocity(vx, vy);
         }
     }
 }
