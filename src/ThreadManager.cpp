@@ -71,7 +71,7 @@ size_t ThreadManager::getTaskCount() const {
 }
 
 void ThreadManager::waitForCompletion() {
-    std::unique_lock<std::mutex> lock(completionMutex);
+    std::unique_lock<std::mutex> lock(taskMutex); // Use taskMutex consistently
     taskCondition.wait(lock, [this]() {
         return (taskQueue.empty() && activeThreads == 0);
     });
@@ -89,10 +89,17 @@ void ThreadManager::processNextTask() {
         
         task = taskQueue.front();
         taskQueue.pop();
+        activeThreads++; // Increment active threads counter
     }
     
     if (task) {
         task();
+        
+        {
+            std::lock_guard<std::mutex> lock(taskMutex); // Use taskMutex for consistency
+            activeThreads--; // Decrement active threads counter
+        }
+        taskCondition.notify_all(); // Notify waiting threads that a task is done
     }
 }
 

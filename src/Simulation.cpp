@@ -43,14 +43,15 @@ void Simulation::setContainmentField(std::unique_ptr<ContainmentField> field) {
 
 void Simulation::start() {
     running = true;
-    for (size_t i = 0; i < numThreads; ++i) {
-        workerThreads.emplace_back(&Simulation::workerThread, this, i);
-    }
+    // Remove creation of worker threads - let ThreadManager handle it
+    threadManager->start();
     std::cout << "Simulation started with " << numThreads << " threads." << std::endl;
 }
 
 void Simulation::stop() {
     running = false;
+    threadManager->stop();
+    // Keep this part to ensure proper cleanup
     for (auto& thread : workerThreads) {
         if (thread.joinable()) {
             thread.join();
@@ -85,7 +86,6 @@ void Simulation::step() {
                     double dirY = -y / distance;
                     double vx = particles[j]->getVX() + force * dirX * timeStep;  
                     double vy = particles[j]->getVY() + force * dirY * timeStep;
-                    particles[j]->setVelocity(vx, vy);
                 }
             }
         });
@@ -142,11 +142,21 @@ size_t Simulation::getNumThreads() const {
 }
 
 void Simulation::updatePositions(double dt) {
-    for (auto& particle : particles) {
-        double x = particle->getX() + particle->getVX() * dt;
-        double y = particle->getY() + particle->getVY() * dt;
-        particle->setPosition(x, y);
+    // Divide particles among threads for position updates
+    size_t particlesPerThread = std::max(size_t(1), particles.size() / numThreads);
+    for (size_t i = 0; i < particles.size(); i += particlesPerThread) {
+        size_t end = std::min(i + particlesPerThread, particles.size());
+        threadManager->addTask([this, i, end, dt]() {
+            for (size_t j = i; j < end; j++) {
+                double x = particles[j]->getX() + particles[j]->getVX() * dt;
+                double y = particles[j]->getY() + particles[j]->getVY() * dt;
+                particles[j]->setPosition(x, y);
+            }
+        });
     }
+    
+    // Wait for all position updates to complete
+    threadManager->waitForCompletion();
 }
 
 void Simulation::handleCollisions() {
@@ -156,14 +166,5 @@ void Simulation::handleCollisions() {
                 particles[i]->collide(*particles[j]);
             }
         }
-    }
-}
-
-void Simulation::workerThread(size_t threadId) {
-    while (running) {
-        if (threadManager->isRunning()) {
-            threadManager->processNextTask();
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
